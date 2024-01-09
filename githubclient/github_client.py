@@ -1,14 +1,10 @@
 """GitHub API client implementation."""
 import configparser
+from typing import Any, Dict, Optional
 
 import requests
 
-from githubclient.exceptions import (
-    InvalidAccessTokenError,
-    RepositoryCreationError,
-    RepositoryDeletionError,
-    UserNotFoundError,
-)
+from githubclient.exceptions import GitHubClientError
 
 
 class GithubClient(object):
@@ -30,7 +26,8 @@ class GithubClient(object):
         config.read('githubclient/key.ini')
 
         self._api_key = config['API']['GITHUB_KEY']
-        self.url = 'https://api.github.com'
+        self._auth_header = {'Authorization': 'Bearer {0}'.format(self._api_key)}
+        self._url = 'https://api.github.com'
         self._user = self._get_username_for_key()  # (Task: storing some retrieved data locally)
 
     def get_user_info(self, username: str):
@@ -39,17 +36,12 @@ class GithubClient(object):
 
         :param username:
         :return: dict with all information about the user
-
-        :raises: UserNotFoundError if user is not found
         """
-        response = requests.get(
-            '{0}/users/{1}'.format(self.url, username),
-            timeout=1,
-        )
-
-        if response.status_code != requests.status_codes.codes.OK:
-            raise UserNotFoundError(username)
-        return response.json()
+        endpoint = '/users/{0}'.format(username)
+        return self._make_request(
+            'GET',
+            endpoint=endpoint,
+        ).json()
 
     def get_user_repos(self, username: str):
         """
@@ -57,17 +49,12 @@ class GithubClient(object):
 
         :param username: username whose repositories are to be fetched
         :return: list of repository names
-
-        :raises: UserNotFoundError if user is not found
         """
-        response = requests.get(
-            '{0}/users/{1}/repos'.format(self.url, username),
-            timeout=1,
+        endpoint = '/users/{0}/repos'.format(username)
+        response = self._make_request(
+            'GET',
+            endpoint=endpoint,
         )
-
-        if response.status_code != requests.status_codes.codes.OK:
-            raise UserNotFoundError(username)
-
         return [repo['name'] for repo in response.json()]
 
     def create_new_repo(self, repo_name: str, description: str = None, private: bool = False):
@@ -79,18 +66,14 @@ class GithubClient(object):
         :param private: privacy setting
 
         :return: url of the created repository
-
-        :raises: RepositoryCreationError if repository creation fails
         """
-        response = requests.post(
-            '{0}/user/repos'.format(self.url),
+        endpoint = '/user/repos'
+        response = self._make_request(
+            'POST',
+            endpoint=endpoint,
             json={'name': repo_name, 'description': description, 'private': private},
-            headers={'Authorization': 'Bearer {0}'.format(self._api_key)},
-            timeout=1,
+            headers=self._auth_header,
         )
-
-        if response.status_code != requests.status_codes.codes.CREATED:
-            raise RepositoryCreationError(response.json())
 
         return response.json()['html_url']
 
@@ -101,16 +84,13 @@ class GithubClient(object):
         :param repo_name: repository to be deleted
         :return: True if deletion is successful
 
-        :raises: RepositoryDeletionError if repository deletion fails
         """
-        response = requests.delete(
-            '{0}/repos/{1}/{2}'.format(self.url, self._user, repo_name),
-            headers={'Authorization': 'Bearer {0}'.format(self._api_key)},
-            timeout=1,
+        endpoint = '/repos/{0}/{1}'.format(self._user, repo_name)
+        self._make_request(
+            'DELETE',
+            endpoint=endpoint,
+            headers=self._auth_header,
         )
-
-        if response.status_code != requests.status_codes.codes.NO_CONTENT:
-            raise RepositoryDeletionError(response.json())
         return True
 
     def _get_username_for_key(self):
@@ -118,15 +98,46 @@ class GithubClient(object):
         Use to fetch the username of the GitHub API key owner.
 
         :return: username of the GitHub API key owner
-
-        :raises: InvalidAccessTokenError if the access token in key.ini is not associated with any real profile
         """
-        response = requests.get(
-            '{0}/user'.format(self.url),
-            headers={'Authorization': 'Bearer {0}'.format(self._api_key)},
+        endpoint = '/user'
+        response = self._make_request(
+            'GET',
+            endpoint=endpoint,
+            headers=self._auth_header,
+        )
+
+        return response.json()['login']
+
+    def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        json: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Request method for interacting with API.
+
+        :param method: request method
+        :param endpoint: URL endpoint for API
+        :param json: request body data, defaults to None
+        :param headers: request headers, defaults to None
+
+        :return: response
+
+        :raises: GitHubClientError if response code is not 2xx
+        """
+        response = requests.request(
+            method=method,
+            url=self._url + endpoint,
+            json=json,
+            headers=headers,
             timeout=1,
         )
 
-        if response.status_code != requests.status_codes.codes.OK:
-            raise InvalidAccessTokenError()
-        return response.json()['login']
+        try:
+            response.raise_for_status()
+        except requests.HTTPError:
+            raise GitHubClientError(response.json())
+
+        return response
